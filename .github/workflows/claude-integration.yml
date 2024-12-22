@@ -17,18 +17,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        
+
       - name: Get context
         id: context
+        shell: bash
         run: |
           if [[ "${{ github.event_name }}" == "issues" ]]; then
-            echo "comment=${{ github.event.issue.body }}" >> $GITHUB_OUTPUT
+            body="${{ github.event.issue.body }}"
           else
-            echo "comment=${{ github.event.comment.body }}" >> $GITHUB_OUTPUT
+            body="${{ github.event.comment.body }}"
           fi
-          echo "repo=${{ github.repository }}" >> $GITHUB_OUTPUT
-          echo "default_branch=${{ github.event.repository.default_branch }}" >> $GITHUB_OUTPUT
-          
+          # Escape newlines and quotes for GitHub Actions
+          body="${body//'%'/'%25'}"
+          body="${body//$'\n'/'%0A'}"
+          body="${body//$'\r'/'%0D'}"
+          echo "comment=${body}" >> "$GITHUB_OUTPUT"
+          echo "repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
+          echo "branch=${GITHUB_REF#refs/heads/}" >> "$GITHUB_OUTPUT"
+
       - name: Call Anthropic API
         id: claude
         uses: actions/github-script@v7
@@ -36,6 +42,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           script: |
+            const comment = process.env.COMMENT || '${{ steps.context.outputs.comment }}';
             const response = await fetch('https://api.anthropic.com/v1/messages', {
               method: 'POST',
               headers: {
@@ -48,11 +55,11 @@ jobs:
                 messages: [
                   {
                     role: 'system',
-                    content: `You are processing GitHub repository updates. Repository: ${{ steps.context.outputs.repo }}, Default Branch: ${{ steps.context.outputs.default_branch }}`
+                    content: 'You are processing GitHub repository updates. Create or modify files based on the user request. Respond with a JSON object containing file paths and their content.'
                   },
                   {
                     role: 'user',
-                    content: `${{ steps.context.outputs.comment }}`
+                    content: comment
                   }
                 ],
                 max_tokens: 4096
@@ -60,33 +67,43 @@ jobs:
             });
             
             const data = await response.json();
+            if (data.error) {
+              core.setFailed(data.error.message);
+              return;
+            }
             return data.content[0].text;
-            
-      - name: Process Claude's response
-        id: process
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const response = ${{ steps.claude.outputs.result }};
-            // Process response and create files as needed
-            // This will be expanded based on the response format we define
-            
-      - name: Create branch if needed
-        if: ${{ github.event.issue.pull_request == null }}
+
+      - name: Create new branch
         run: |
           BRANCH_NAME="update/claude-$(date +%s)"
           git checkout -b $BRANCH_NAME
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
-          
-      - name: Commit changes
+          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+      - name: Process Claude's response and create files
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const response = ${{ steps.claude.outputs.result }};
+            try {
+              const files = JSON.parse(response);
+              for (const [path, content] of Object.entries(files)) {
+                fs.writeFileSync(path, content);
+                console.log(`Created/updated file: ${path}`);
+              }
+            } catch (error) {
+              core.setFailed(`Failed to process response: ${error.message}`);
+            }
+
+      - name: Commit and push changes
         run: |
           git add .
-          git commit -m "Update from Claude: ${{ steps.context.outputs.comment }}"
-          git push origin HEAD
-          
+          git commit -m "Update from Claude based on issue #${{ github.event.issue.number }}"
+          git push origin ${{ env.BRANCH_NAME }}
+
       - name: Create Pull Request
-        if: ${{ github.event.issue.pull_request == null }}
         uses: actions/github-script@v7
         with:
           script: |
@@ -94,16 +111,14 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: 'Update from Claude',
-              body: 'Automated updates based on issue/comment',
+              body: `Automated updates based on issue #${{ github.event.issue.number }}\n\nOriginal request: ${{ steps.context.outputs.comment }}`,
               head: process.env.BRANCH_NAME,
-              base: '${{ steps.context.outputs.default_branch }}'
+              base: '${{ github.event.repository.default_branch }}'
             });
             
-            // Comment on the original issue with the PR link
-            const body = `Created PR: ${pr.data.html_url}`;
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
-              body: body
+              body: `Created PR: ${pr.data.html_url}\n\nPlease review the changes and let me know if you'd like any adjustments.`
             });
