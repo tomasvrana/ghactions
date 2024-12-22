@@ -20,20 +20,13 @@ jobs:
 
       - name: Get context
         id: context
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "issues" ]]; then
-            body="${{ github.event.issue.body }}"
-          else
-            body="${{ github.event.comment.body }}"
-          fi
-          # Escape newlines and quotes for GitHub Actions
-          body="${body//'%'/'%25'}"
-          body="${body//$'\n'/'%0A'}"
-          body="${body//$'\r'/'%0D'}"
-          echo "comment=${body}" >> "$GITHUB_OUTPUT"
-          echo "repo=${{ github.repository }}" >> "$GITHUB_OUTPUT"
-          echo "branch=${GITHUB_REF#refs/heads/}" >> "$GITHUB_OUTPUT"
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const body = context.payload.issue ? context.payload.issue.body : context.payload.comment.body;
+            core.setOutput('comment', body);
+            core.setOutput('repo', context.repo.owner + '/' + context.repo.repo);
+            core.setOutput('branch', context.ref.replace('refs/heads/', ''));
 
       - name: Call Anthropic API
         id: claude
@@ -42,7 +35,6 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           script: |
-            const comment = process.env.COMMENT || '${{ steps.context.outputs.comment }}';
             const response = await fetch('https://api.anthropic.com/v1/messages', {
               method: 'POST',
               headers: {
@@ -59,7 +51,7 @@ jobs:
                   },
                   {
                     role: 'user',
-                    content: comment
+                    content: '${{ steps.context.outputs.comment }}'
                   }
                 ],
                 max_tokens: 4096
@@ -71,7 +63,7 @@ jobs:
               core.setFailed(data.error.message);
               return;
             }
-            return data.content[0].text;
+            core.setOutput('result', data.content[0].text);
 
       - name: Create new branch
         run: |
@@ -86,7 +78,7 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const response = ${{ steps.claude.outputs.result }};
+            const response = '${{ steps.claude.outputs.result }}';
             try {
               const files = JSON.parse(response);
               for (const [path, content] of Object.entries(files)) {
