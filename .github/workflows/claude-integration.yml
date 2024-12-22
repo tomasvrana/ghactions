@@ -26,7 +26,6 @@ jobs:
             const body = context.payload.issue ? context.payload.issue.body : context.payload.comment.body;
             core.setOutput('comment', body);
             core.setOutput('repo', context.repo.owner + '/' + context.repo.repo);
-            core.setOutput('branch', context.ref.replace('refs/heads/', ''));
 
       - name: Call Anthropic API
         id: claude
@@ -35,32 +34,39 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         with:
           script: |
-            const response = await fetch('https://api.anthropic.com/v1/messages', {
-              method: 'POST',
-              headers: {
-                'x-api-key': process.env.ANTHROPIC_API_KEY,
-                'anthropic-version': '2023-06-01',
-                'content-type': 'application/json'
-              },
-              body: JSON.stringify({
-                model: 'claude-3-5-sonnet-20241022',
-                system: 'You are processing GitHub repository updates. Create or modify files based on the user request. Respond with a JSON object containing file paths and their content.',
-                messages: [
-                  {
-                    role: 'user',
-                    content: '${{ steps.context.outputs.comment }}'
-                  }
-                ],
-                max_tokens: 4096
-              })
-            });
+            const comment = process.env.COMMENT || core.getInput('comment');
             
-            const data = await response.json();
-            if (data.error) {
-              core.setFailed(data.error.message);
-              return;
+            try {
+              const response = await fetch('https://api.anthropic.com/v1/messages', {
+                method: 'POST',
+                headers: {
+                  'x-api-key': process.env.ANTHROPIC_API_KEY,
+                  'anthropic-version': '2023-06-01',
+                  'content-type': 'application/json'
+                },
+                body: JSON.stringify({
+                  model: 'claude-3-5-sonnet-20241022',
+                  system: 'You are processing GitHub repository updates. Create or modify files based on the user request. Respond with a JSON object containing file paths and their content. Example response format: {"index.html": "<html><body><h1>Hello World</h1></body></html>"}',
+                  messages: [
+                    {
+                      role: 'user',
+                      content: core.getState('comment')
+                    }
+                  ],
+                  max_tokens: 4096
+                })
+              });
+              
+              const data = await response.json();
+              if (data.error) {
+                throw new Error(data.error.message);
+              }
+              
+              core.setOutput('result', JSON.stringify(data.content[0].text));
+              console.log('API Response:', data.content[0].text);
+            } catch (error) {
+              core.setFailed(`API call failed: ${error.message}`);
             }
-            core.setOutput('result', data.content[0].text);
 
       - name: Create new branch
         run: |
@@ -74,16 +80,19 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const fs = require('fs');
-            const response = '${{ steps.claude.outputs.result }}';
             try {
-              const files = JSON.parse(response);
+              const responseText = JSON.parse(core.getOutput('result'));
+              const files = JSON.parse(responseText);
+              
+              const fs = require('fs').promises;
+              
               for (const [path, content] of Object.entries(files)) {
-                fs.writeFileSync(path, content);
+                await fs.writeFile(path, content);
                 console.log(`Created/updated file: ${path}`);
               }
             } catch (error) {
               core.setFailed(`Failed to process response: ${error.message}`);
+              console.log('Error details:', error);
             }
 
       - name: Commit and push changes
@@ -96,18 +105,21 @@ jobs:
         uses: actions/github-script@v7
         with:
           script: |
-            const pr = await github.rest.pulls.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              title: 'Update from Claude',
-              body: `Automated updates based on issue #${{ github.event.issue.number }}\n\nOriginal request: ${{ steps.context.outputs.comment }}`,
-              head: process.env.BRANCH_NAME,
-              base: '${{ github.event.repository.default_branch }}'
-            });
-            
-            await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: `Created PR: ${pr.data.html_url}\n\nPlease review the changes and let me know if you'd like any adjustments.`
-            });
+            try {
+              const pr = await github.rest.pulls.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: 'Update from Claude',
+                body: `Automated updates based on issue #${context.issue.number}`,
+                head: process.env.BRANCH_NAME,
+                base: context.payload.repository.default_branch
+              });
+              
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: context.issue.number,
+                body: `Created PR: ${pr.data.html_url}\n\nPlease review the changes and let me know if you'd like any adjustments.`
+              });
+            } catch (error) {
+              core.setFailed(`Failed to create PR: ${error.message}`);
+            }
