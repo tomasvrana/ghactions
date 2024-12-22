@@ -44,11 +44,8 @@ jobs:
               },
               body: JSON.stringify({
                 model: 'claude-3-5-sonnet-20241022',
+                system: 'You are processing GitHub repository updates. Create or modify files based on the user request. Respond with a JSON object containing file paths and their content.',
                 messages: [
-                  {
-                    role: 'system',
-                    content: 'You are processing GitHub repository updates. Create or modify files based on the user request. Respond with a JSON object containing file paths and their content.'
-                  },
                   {
                     role: 'user',
                     content: '${{ steps.context.outputs.comment }}'
