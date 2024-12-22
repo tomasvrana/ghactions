@@ -61,7 +61,7 @@ jobs:
                 throw new Error(data.error.message);
               }
               
-              core.setOutput('result', JSON.stringify(data.content[0].text));
+              core.setOutput('claude_response', JSON.stringify(data.content[0].text));
               console.log('API Response:', data.content[0].text);
             } catch (error) {
               core.setFailed(`API call failed: ${error.message}`);
@@ -78,10 +78,13 @@ jobs:
 
       - name: Process Claude's response and create files
         uses: actions/github-script@v7
+        env:
+          CLAUDE_RESPONSE: ${{ steps.claude.outputs.claude_response }}
         with:
           script: |
             try {
-              const responseText = JSON.parse(core.getOutput('result'));
+              const responseText = process.env.CLAUDE_RESPONSE;
+              console.log('Processing response:', responseText); // Debug log
               const files = JSON.parse(responseText);
               
               const fs = require('fs').promises;
