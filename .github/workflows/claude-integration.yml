@@ -1,5 +1,11 @@
 name: Claude Integration
 
+# Add top-level permissions
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
 on:
   issues:
     types: [opened]
@@ -9,6 +15,7 @@ on:
 jobs:
   process-request:
     runs-on: ubuntu-latest
+    # Job-level permissions are still needed
     permissions:
       contents: write
       pull-requests: write
@@ -17,6 +24,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Needed for creating branches
 
       - name: Get context
         id: context
@@ -35,7 +44,7 @@ jobs:
         with:
           script: |
             try {
-              console.log('Issue body:', process.env.ISSUE_BODY);  // Debug log
+              console.log('Issue body:', process.env.ISSUE_BODY);
               const response = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
                 headers: {
@@ -72,8 +81,8 @@ jobs:
         run: |
           BRANCH_NAME="update/claude-$(date +%s)"
           git checkout -b $BRANCH_NAME
-          git config user.name "GitHub Action"
-          git config user.email "action@github.com"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
       - name: Process Claude's response and create files
@@ -84,7 +93,7 @@ jobs:
           script: |
             try {
               const responseText = process.env.CLAUDE_RESPONSE;
-              console.log('Processing response:', responseText); // Debug log
+              console.log('Processing response:', responseText);
               const files = JSON.parse(responseText);
               
               const fs = require('fs').promises;
@@ -107,6 +116,7 @@ jobs:
       - name: Create Pull Request
         uses: actions/github-script@v7
         with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             try {
               const pr = await github.rest.pulls.create({
@@ -125,4 +135,5 @@ jobs:
               });
             } catch (error) {
               core.setFailed(`Failed to create PR: ${error.message}`);
+              console.log('Error details:', error);
             }
