@@ -1,6 +1,5 @@
 name: Claude Integration
 
-# Add top-level permissions
 permissions:
   contents: write
   pull-requests: write
@@ -15,7 +14,6 @@ on:
 jobs:
   process-request:
     runs-on: ubuntu-latest
-    # Job-level permissions are still needed
     permissions:
       contents: write
       pull-requests: write
@@ -25,7 +23,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # Needed for creating branches
+          fetch-depth: 0
 
       - name: Get context
         id: context
@@ -70,20 +68,16 @@ jobs:
                 throw new Error(data.error.message);
               }
               
-              core.setOutput('claude_response', JSON.stringify(data.content[0].text));
-              console.log('API Response:', data.content[0].text);
+              // Extract the actual response content and ensure it's valid JSON
+              const responseText = data.content[0].text;
+              // Validate that it's parseable JSON before proceeding
+              JSON.parse(responseText); // This will throw if invalid
+              core.setOutput('claude_response', responseText);
+              console.log('API Response:', responseText);
             } catch (error) {
               core.setFailed(`API call failed: ${error.message}`);
               console.log('Error details:', error);
             }
-
-      - name: Create new branch
-        run: |
-          BRANCH_NAME="update/claude-$(date +%s)"
-          git checkout -b $BRANCH_NAME
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
 
       - name: Process Claude's response and create files
         uses: actions/github-script@v7
@@ -92,19 +86,23 @@ jobs:
         with:
           script: |
             try {
-              const responseText = process.env.CLAUDE_RESPONSE;
-              console.log('Processing response:', responseText);
-              const files = JSON.parse(responseText);
+              console.log('Raw response:', process.env.CLAUDE_RESPONSE);
+              // Parse the response directly - it should already be valid JSON
+              const files = JSON.parse(process.env.CLAUDE_RESPONSE);
+              console.log('Parsed files:', files);
               
               const fs = require('fs').promises;
               
               for (const [path, content] of Object.entries(files)) {
+                console.log(`Writing file: ${path}`);
                 await fs.writeFile(path, content);
                 console.log(`Created/updated file: ${path}`);
               }
             } catch (error) {
               core.setFailed(`Failed to process response: ${error.message}`);
               console.log('Error details:', error);
+              console.log('Response type:', typeof process.env.CLAUDE_RESPONSE);
+              console.log('Response length:', process.env.CLAUDE_RESPONSE?.length);
             }
 
       - name: Commit and push changes
