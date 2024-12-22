@@ -25,18 +25,17 @@ jobs:
           script: |
             const body = context.payload.issue ? context.payload.issue.body : context.payload.comment.body;
             core.setOutput('comment', body);
-            core.setOutput('repo', context.repo.owner + '/' + context.repo.repo);
 
       - name: Call Anthropic API
         id: claude
         uses: actions/github-script@v7
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_BODY: ${{ steps.context.outputs.comment }}
         with:
           script: |
-            const comment = process.env.COMMENT || core.getInput('comment');
-            
             try {
+              console.log('Issue body:', process.env.ISSUE_BODY);  // Debug log
               const response = await fetch('https://api.anthropic.com/v1/messages', {
                 method: 'POST',
                 headers: {
@@ -50,7 +49,7 @@ jobs:
                   messages: [
                     {
                       role: 'user',
-                      content: core.getState('comment')
+                      content: process.env.ISSUE_BODY
                     }
                   ],
                   max_tokens: 4096
@@ -66,6 +65,7 @@ jobs:
               console.log('API Response:', data.content[0].text);
             } catch (error) {
               core.setFailed(`API call failed: ${error.message}`);
+              console.log('Error details:', error);
             }
 
       - name: Create new branch
